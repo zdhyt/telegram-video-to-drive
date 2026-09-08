@@ -4,6 +4,7 @@ import sys
 import shutil
 import logging
 import subprocess
+import base64
 from pathlib import Path
 
 import requests
@@ -34,6 +35,12 @@ GOOGLE_OAUTH_CLIENT_SECRET = os.environ[
 DRIVE_INPUT_FOLDER_ID = os.environ[
     "DRIVE_INPUT_FOLDER_ID"
 ]
+
+# Base64 encoded YouTube cookies stored in GitHub Secrets.
+YOUTUBE_COOKIES_B64 = os.environ.get(
+    "YOUTUBE_COOKIES_B64",
+    "",
+).strip()
 
 WORK_DIR = Path("work")
 WORK_DIR.mkdir(exist_ok=True)
@@ -143,6 +150,15 @@ def is_supported_url(url):
     return any(
         domain in lowered
         for domain in supported_domains
+    )
+
+
+def is_youtube_url(url):
+    lowered = url.lower()
+
+    return (
+        "youtube.com" in lowered
+        or "youtu.be" in lowered
     )
 
 
@@ -263,6 +279,49 @@ def drive_file_exists(
 
 
 # ============================================================
+# CREATE TEMPORARY YOUTUBE COOKIES FILE
+# ============================================================
+
+def create_youtube_cookies_file():
+    if not YOUTUBE_COOKIES_B64:
+        raise RuntimeError(
+            "YOUTUBE_COOKIES_B64 secret is missing."
+        )
+
+    cookies_path = (
+        WORK_DIR
+        / "youtube_cookies.txt"
+    )
+
+    try:
+        cookies_data = base64.b64decode(
+            YOUTUBE_COOKIES_B64
+        )
+
+    except Exception as exc:
+        raise RuntimeError(
+            "Could not decode YouTube cookies."
+        ) from exc
+
+    cookies_path.write_bytes(
+        cookies_data
+    )
+
+    # Restrict permissions on the temporary
+    # cookie file as much as possible.
+    try:
+        cookies_path.chmod(0o600)
+    except Exception:
+        pass
+
+    logger.info(
+        "Temporary YouTube cookies file created."
+    )
+
+    return cookies_path
+
+
+# ============================================================
 # VIDEO DOWNLOAD
 # ============================================================
 
@@ -271,6 +330,8 @@ def download_video(url):
         str(WORK_DIR)
         + "/%(title).100s-%(id)s.%(ext)s"
     )
+
+    cookies_path = None
 
     command = [
         sys.executable,
@@ -290,60 +351,103 @@ def download_video(url):
 
         "-o",
         output_template,
-
-        url,
     ]
+
+    # --------------------------------------------------------
+    # YouTube cookies
+    #
+    # Cookies are used only for YouTube.
+    # Instagram does not receive the YouTube cookies.
+    # --------------------------------------------------------
+
+    if is_youtube_url(url):
+        cookies_path = (
+            create_youtube_cookies_file()
+        )
+
+        command.extend(
+            [
+                "--cookies",
+                str(cookies_path),
+            ]
+        )
+
+    command.append(url)
 
     logger.info(
         "Starting yt-dlp download."
     )
 
-    result = subprocess.run(
-        command,
-        capture_output=True,
-        text=True,
-    )
-
-    if result.returncode != 0:
-        logger.error(
-            "yt-dlp stdout:\n%s",
-            result.stdout,
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
         )
 
-        logger.error(
-            "yt-dlp stderr:\n%s",
-            result.stderr,
+        if result.stdout:
+            logger.info(
+                "yt-dlp stdout:\n%s",
+                result.stdout,
+            )
+
+        if result.returncode != 0:
+            logger.error(
+                "yt-dlp stderr:\n%s",
+                result.stderr,
+            )
+
+            raise RuntimeError(
+                "Video download failed."
+            )
+
+        video_files = [
+            path
+            for path in WORK_DIR.iterdir()
+            if path.is_file()
+            and path.suffix.lower()
+            in {
+                ".mp4",
+                ".mov",
+                ".m4v",
+                ".webm",
+                ".mkv",
+            }
+        ]
+
+        if not video_files:
+            raise RuntimeError(
+                "Download completed but no video file was found."
+            )
+
+        video_files.sort(
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
         )
 
-        raise RuntimeError(
-            "Video download failed."
-        )
+        return video_files[0]
 
-    video_files = [
-        path
-        for path in WORK_DIR.iterdir()
-        if path.is_file()
-        and path.suffix.lower()
-        in {
-            ".mp4",
-            ".mov",
-            ".m4v",
-            ".webm",
-            ".mkv",
-        }
-    ]
+    finally:
+        # ----------------------------------------------------
+        # Delete temporary YouTube cookies immediately after
+        # yt-dlp finishes.
+        # ----------------------------------------------------
 
-    if not video_files:
-        raise RuntimeError(
-            "Download completed but no video file was found."
-        )
+        if cookies_path is not None:
+            try:
+                cookies_path.unlink(
+                    missing_ok=True
+                )
 
-    video_files.sort(
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
+                logger.info(
+                    "Temporary YouTube cookies file deleted."
+                )
 
-    return video_files[0]
+            except Exception as exc:
+                logger.warning(
+                    "Could not delete temporary cookies file: %s",
+                    exc,
+                )
 
 
 # ============================================================
@@ -507,7 +611,7 @@ def process_video(
         )
 
         # ----------------------------------------------------
-        # DELETE LOCAL FILE
+        # DELETE LOCAL VIDEO
         # ----------------------------------------------------
 
         video_path.unlink(
@@ -537,6 +641,20 @@ def process_video(
                 )
             except Exception:
                 pass
+
+        # Extra cleanup:
+        # Never leave the temporary cookie file behind.
+        cookies_path = (
+            WORK_DIR
+            / "youtube_cookies.txt"
+        )
+
+        try:
+            cookies_path.unlink(
+                missing_ok=True
+            )
+        except Exception:
+            pass
 
 
 # ============================================================
