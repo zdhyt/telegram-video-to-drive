@@ -3,6 +3,10 @@ name: Telegram Video Bot
 on:
   workflow_dispatch:
 
+  schedule:
+    # Check Telegram every 5 minutes
+    - cron: "*/5 * * * *"
+
 jobs:
   bot:
     runs-on: ubuntu-latest
@@ -33,5 +37,7 @@ jobs:
           GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
 
           DRIVE_INPUT_FOLDER_ID: ${{ secrets.DRIVE_INPUT_FOLDER_ID }}
+
+          BOT_GITHUB_TOKEN: ${{ secrets.BOT_GITHUB_TOKEN }}
 
         run: python bot.py
