@@ -46,6 +46,8 @@ jobs:
 
           DRIVE_INPUT_FOLDER_ID: ${{ secrets.DRIVE_INPUT_FOLDER_ID }}
 
+          YOUTUBE_COOKIES_B64: ${{ secrets.YOUTUBE_COOKIES_B64 }}
+
           BOT_GITHUB_TOKEN: ${{ secrets.BOT_GITHUB_TOKEN }}
 
           TELEGRAM_URL: ${{ github.event.client_payload.url }}
